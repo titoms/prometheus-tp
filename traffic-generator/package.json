@@ -1,0 +1,10 @@
+{
+  "name": "traffic-generator",
+  "version": "1.0.0",
+  "description": "Générateur de trafic pour la démo Prometheus — appelle demo-app à intervalles réguliers",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {}
+}

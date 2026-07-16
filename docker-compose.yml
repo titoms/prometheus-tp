@@ -1,0 +1,22 @@
+services:
+
+  # ─── Demo App ──────────────────────────────────────────────────────────────
+  # Application Node.js instrumentée avec prom-client
+  demo-app:
+    build: ./demo-app
+    container_name: demo-app
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  # ─── Traffic Generator ─────────────────────────────────────────────────────
+  # Génère du trafic vers demo-app pour rendre les métriques visibles
+  traffic-generator:
+    build: ./traffic-generator
+    container_name: traffic-generator
+    environment:
+      - TARGET_URL=http://demo-app:3001
+      - INTERVAL_MS=2000          # une requête toutes les 2 secondes
+    depends_on:
+      - demo-app
+    restart: unless-stopped
