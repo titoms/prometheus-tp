@@ -10,6 +10,18 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-16-demo-app-observability-design.md`
 
+> **SCOPE CHANGE (2026-09-16, post-approval):** this is a training repo —
+> only `demo-app` and `traffic-generator` are meant to be pre-built.
+> Prometheus/Alertmanager/Grafana/node-exporter/cadvisor are set up
+> **manually by students during the course**, not pre-provisioned.
+> **Tasks 1-5 below were completed as written** (demo-app + scenario
+> engine + traffic-generator, verified end-to-end). **Tasks 6-16 are
+> superseded** — `docker-compose.yml` was scoped back down to just the
+> two app services, and the Prometheus/Alertmanager/Grafana/docs work
+> they described is now covered instead by the single hands-on guide at
+> `docs/TUTORIEL.md`. Kept here only as a historical record of the
+> original (larger) design.
+
 ## Global Constraints
 
 - No database, no authentication anywhere (including `/admin/*`).
