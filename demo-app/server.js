@@ -1,70 +1,57 @@
 /**
- * demo-app — Application Node.js/Express instrumentée avec Prometheus
+ * demo-app — mini e-commerce API instrumentée avec Prometheus.
  * Formation Prometheus de A à Z
  *
- * Métriques exposées :
- *   - http_requests_total        (Counter)   : total requêtes par method/route/status_code
- *   - http_request_duration_seconds (Histogram): durée des requêtes
- *   - app_started               (Gauge)     : vaut 1 si l'app est démarrée
- *
- * Endpoints :
- *   GET /         -> réponse "OK"
- *   GET /health   -> {"status":"OK"}
- *   GET /slow     -> attend 500ms-2000ms aléatoirement
- *   GET /error    -> renvoie 500 dans ~50% des cas
- *   GET /metrics  -> métriques Prometheus (scraped par Prometheus)
+ * Le comportement (latence, erreurs, dépendances dégradées) est piloté
+ * par un "scénario" actif en mémoire (voir scenarios.js), modifiable via
+ * les routes /admin/scenario/* — utile pour simuler des incidents en
+ * formation, sans authentification ni base de données.
  */
 
 const express = require('express');
-const client = require('prom-client');
+const {
+  register,
+  httpRequestsTotal,
+  httpRequestDuration,
+  ordersTotal,
+  paymentsTotal,
+  cartActionsTotal,
+  recommendationRequestsTotal,
+  activeUsers,
+} = require('./metrics');
+const {
+  SCENARIO_NAMES,
+  getStatus,
+  setActiveScenario,
+  initMetrics,
+  applyLatency,
+  shouldFail,
+  shouldFallback,
+} = require('./scenarios');
+const { getAllProducts, getProductById } = require('./products');
 
 const app = express();
+app.use(express.json());
 const PORT = 3001;
 
-// ─── Registre Prometheus ────────────────────────────────────────────────────
-// Le registre contient toutes les métriques déclarées par l'application.
-const register = new client.Registry();
+initMetrics();
 
-// Métriques système par défaut : memory heap, event loop lag, etc.
-client.collectDefaultMetrics({ register });
-
-// ─── Métriques métier ───────────────────────────────────────────────────────
-
-// COUNTER — s'incrémente, ne diminue jamais
-// Bonne pratique : éviter les labels à haute cardinalité (user_id, request_id...)
-const httpRequestsTotal = new client.Counter({
-  name: 'http_requests_total',
-  help: 'Nombre total de requêtes HTTP reçues',
-  labelNames: ['method', 'route', 'status_code'],
-  registers: [register],
-});
-
-// HISTOGRAM — distribue les observations dans des buckets
-// Permet de calculer des percentiles (p50, p95, p99) avec histogram_quantile()
-const httpRequestDuration = new client.Histogram({
-  name: 'http_request_duration_seconds',
-  help: 'Durée des requêtes HTTP en secondes',
-  labelNames: ['method', 'route', 'status_code'],
-  buckets: [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0],
-  registers: [register],
-});
-
-// GAUGE — peut monter et descendre
-// Ici utilisé comme flag booléen : 1 = app démarrée
-const appStarted = new client.Gauge({
-  name: 'app_started',
-  help: 'Vaut 1 si l\'application est démarrée et fonctionnelle',
-  registers: [register],
-});
-appStarted.set(1);
+// ─── Utilisateurs actifs simulés ────────────────────────────────────────────
+// Marche aléatoire bornée, indépendante du scénario — juste pour avoir une
+// Gauge qui bouge naturellement dans les dashboards.
+let simulatedActiveUsers = 20;
+activeUsers.set(simulatedActiveUsers);
+setInterval(() => {
+  const delta = Math.floor(Math.random() * 11) - 5; // -5..+5
+  simulatedActiveUsers = Math.max(5, Math.min(80, simulatedActiveUsers + delta));
+  activeUsers.set(simulatedActiveUsers);
+}, 5000);
 
 // ─── Middleware de tracking ─────────────────────────────────────────────────
-// Mesure chaque requête : durée + incrément du counter.
-// Placé AVANT les routes pour intercepter toutes les requêtes.
 app.use((req, res, next) => {
   const end = httpRequestDuration.startTimer();
   res.on('finish', () => {
-    // req.route.path donne la route paramétrée (/user/:id) et non l'URL réelle
+    // req.route.path donne la route paramétrée (/products/:id), pas l'URL réelle
     const route = req.route ? req.route.path : req.path;
     const labels = {
       method: req.method,
@@ -77,7 +64,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Routes ─────────────────────────────────────────────────────────────────
+// ─── Routes applicatives ────────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
   res.send('OK');
@@ -87,26 +74,83 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK' });
 });
 
-// Simule une opération lente — utile pour observer la latence p95
-app.get('/slow', async (req, res) => {
-  const delay = 500 + Math.floor(Math.random() * 1500); // 500ms à 2000ms
-  await new Promise(resolve => setTimeout(resolve, delay));
-  res.json({ message: 'réponse lente', delay_ms: delay });
+app.get('/products', (req, res) => {
+  res.json(getAllProducts());
 });
 
-// Retourne une erreur 500 dans ~50% des cas — utile pour observer le taux d'erreurs
-app.get('/error', (req, res) => {
-  if (Math.random() < 0.5) {
-    res.status(500).json({ error: 'Internal Server Error' });
-  } else {
-    res.json({ message: 'OK cette fois' });
+app.get('/products/:id', (req, res) => {
+  const product = getProductById(req.params.id);
+  if (!product) {
+    return res.status(404).json({ error: 'not found' });
   }
+  res.json(product);
 });
 
-// Endpoint scraped par Prometheus — NE PAS sécuriser en prod sans auth
+app.post('/cart', (req, res) => {
+  const action = req.body && req.body.action === 'remove' ? 'remove' : 'add';
+  cartActionsTotal.labels({ action }).inc();
+  res.json({ action, productId: req.body ? req.body.productId : undefined });
+});
+
+// Échec = 500 (compte dans le taux d'erreur HTTP global)
+app.post('/checkout', async (req, res) => {
+  await applyLatency('checkout');
+  if (shouldFail('checkout')) {
+    ordersTotal.labels({ status: 'failed' }).inc();
+    return res.status(500).json({ error: 'checkout failed' });
+  }
+  ordersTotal.labels({ status: 'success' }).inc();
+  res.json({ status: 'order created' });
+});
+
+// Échec = 402 (échec métier, ne pollue pas le taux d'erreur HTTP 5xx) —
+// mais fait quand même échouer la commande associée (cascade).
+app.post('/payment', async (req, res) => {
+  await applyLatency('payment');
+  if (shouldFail('payment')) {
+    paymentsTotal.labels({ status: 'failed' }).inc();
+    ordersTotal.labels({ status: 'failed' }).inc();
+    return res.status(402).json({ error: 'payment failed' });
+  }
+  paymentsTotal.labels({ status: 'success' }).inc();
+  res.json({ status: 'payment accepted' });
+});
+
+app.get('/recommendations', async (req, res) => {
+  await applyLatency('recommendations');
+  if (shouldFallback()) {
+    recommendationRequestsTotal.labels({ result: 'fallback' }).inc();
+    return res.json({ result: 'fallback', items: ['Casque audio sans fil'] });
+  }
+  recommendationRequestsTotal.labels({ result: 'success' }).inc();
+  res.json({ result: 'success', items: getAllProducts().slice(0, 3).map((p) => p.name) });
+});
+
+// Endpoint scrapé par Prometheus — NE PAS sécuriser en prod sans auth
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', register.contentType);
   res.send(await register.metrics());
+});
+
+// ─── Routes admin (mémoire uniquement, pas d'auth — outil de formation) ────
+
+app.get('/admin/status', (req, res) => {
+  res.json(getStatus());
+});
+
+// Doit être déclarée AVANT /admin/scenario/:name pour matcher en premier.
+app.post('/admin/scenario/reset', (req, res) => {
+  setActiveScenario('normal');
+  res.json({ scenario: 'normal' });
+});
+
+app.post('/admin/scenario/:name', (req, res) => {
+  const { name } = req.params;
+  if (!SCENARIO_NAMES.includes(name)) {
+    return res.status(404).json({ error: `unknown scenario: ${name}` });
+  }
+  setActiveScenario(name);
+  res.json({ scenario: name });
 });
 
 // ─── Démarrage ──────────────────────────────────────────────────────────────

@@ -16,7 +16,14 @@ services:
     container_name: traffic-generator
     environment:
       - TARGET_URL=http://demo-app:3001
-      - INTERVAL_MS=2000          # une requête toutes les 2 secondes
+      - INTERVAL_MS=1000
+      - CONCURRENCY=2
+      - ENABLE_RANDOM_INCIDENTS=false
+      - RANDOM_INCIDENT_MIN_INTERVAL_MS=360000
+      - RANDOM_INCIDENT_MAX_INTERVAL_MS=720000
+      - RANDOM_INCIDENT_MIN_DURATION_MS=120000
+      - RANDOM_INCIDENT_MAX_DURATION_MS=300000
+      - TRAFFIC_SPIKE_MULTIPLIER=4
     depends_on:
       - demo-app
     restart: unless-stopped

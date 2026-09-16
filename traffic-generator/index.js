@@ -1,50 +1,179 @@
 /**
- * Générateur de trafic — Formation Prometheus de A à Z
+ * traffic-generator — Formation Prometheus de A à Z
  *
- * Ce service envoie des requêtes HTTP aléatoires vers demo-app
- * pour que les métriques Prometheus soient visibles dans Grafana.
+ * Simule des parcours utilisateurs normaux contre demo-app, et,
+ * optionnellement, déclenche/annule des incidents aléatoires via
+ * l'API admin de demo-app pour rendre les métriques vivantes.
  *
- * Variables d'environnement :
- *   TARGET_URL   : URL de base de demo-app (défaut: http://demo-app:3001)
- *   INTERVAL_MS  : intervalle entre requêtes en ms (défaut: 2000)
+ * Variables d'environnement : voir README.md.
  */
 
 const TARGET_URL = process.env.TARGET_URL || 'http://demo-app:3001';
-const INTERVAL_MS = parseInt(process.env.INTERVAL_MS || '2000', 10);
+const INTERVAL_MS = parseInt(process.env.INTERVAL_MS || '1000', 10);
+const CONCURRENCY = parseInt(process.env.CONCURRENCY || '2', 10);
+const ENABLE_RANDOM_INCIDENTS = process.env.ENABLE_RANDOM_INCIDENTS === 'true';
+const RANDOM_INCIDENT_MIN_INTERVAL_MS = parseInt(process.env.RANDOM_INCIDENT_MIN_INTERVAL_MS || '360000', 10);
+const RANDOM_INCIDENT_MAX_INTERVAL_MS = parseInt(process.env.RANDOM_INCIDENT_MAX_INTERVAL_MS || '720000', 10);
+const RANDOM_INCIDENT_MIN_DURATION_MS = parseInt(process.env.RANDOM_INCIDENT_MIN_DURATION_MS || '120000', 10);
+const RANDOM_INCIDENT_MAX_DURATION_MS = parseInt(process.env.RANDOM_INCIDENT_MAX_DURATION_MS || '300000', 10);
+const TRAFFIC_SPIKE_MULTIPLIER = parseInt(process.env.TRAFFIC_SPIKE_MULTIPLIER || '4', 10);
 
-// Distribution des endpoints — /slow et /error génèrent les métriques intéressantes
-const endpoints = ['/', '/health', '/slow', '/error', '/slow', '/error'];
+const RANDOM_INCIDENTS = [
+  'high-error',
+  'high-latency',
+  'high-payment-failure',
+  'checkout-degraded',
+  'recommendation-degraded',
+  'traffic-spike',
+];
 
-let requestCount = 0;
-let errorCount = 0;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-async function makeRequest(endpoint) {
-  const url = `${TARGET_URL}${endpoint}`;
+function randomBetween(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function log(msg) {
+  console.log(`[${new Date().toISOString()}] ${msg}`);
+}
+
+async function call(method, path, body) {
+  const url = `${TARGET_URL}${path}`;
   try {
-    const res = await fetch(url);
-    console.log(`[${new Date().toISOString()}] GET ${endpoint} -> ${res.status}`);
-    requestCount++;
-    if (res.status >= 500) errorCount++;
+    const res = await fetch(url, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    log(`${method} ${path} -> ${res.status}`);
+    return res;
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] GET ${endpoint} -> ERREUR réseau: ${err.message}`);
-    errorCount++;
+    log(`${method} ${path} -> ERREUR réseau: ${err.message}`);
+    return null;
   }
 }
 
-async function tick() {
-  const endpoint = endpoints[Math.floor(Math.random() * endpoints.length)];
-  await makeRequest(endpoint);
+// ─── Parcours utilisateur normal ────────────────────────────────────────────
+
+async function runJourney() {
+  await call('GET', '/');
+  await sleep(INTERVAL_MS);
+
+  const productsRes = await call('GET', '/products');
+  await sleep(INTERVAL_MS);
+
+  let productId = 1;
+  if (productsRes && productsRes.ok) {
+    try {
+      const products = await productsRes.json();
+      if (Array.isArray(products) && products.length > 0) {
+        productId = products[randomBetween(0, products.length - 1)].id;
+      }
+    } catch (err) {
+      log(`parsing /products échoué: ${err.message}`);
+    }
+  }
+
+  await call('GET', `/products/${productId}`);
+  await sleep(INTERVAL_MS);
+
+  await call('POST', '/cart', { productId, action: 'add' });
+  await sleep(INTERVAL_MS);
+
+  await call('POST', '/checkout');
+  await sleep(INTERVAL_MS);
+
+  await call('POST', '/payment');
+  await sleep(INTERVAL_MS);
+
+  await call('GET', '/recommendations');
+  await sleep(INTERVAL_MS);
 }
 
-console.log('=== Générateur de trafic démarré ===');
-console.log(`Cible    : ${TARGET_URL}`);
-console.log(`Intervalle: ${INTERVAL_MS}ms`);
-console.log(`Endpoints : ${[...new Set(endpoints)].join(', ')}`);
-console.log('');
+async function journeyWorker(id) {
+  log(`[worker ${id}] démarré`);
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      await runJourney();
+    } catch (err) {
+      log(`[worker ${id}] erreur inattendue: ${err.message}`);
+    }
+  }
+}
 
-setInterval(tick, INTERVAL_MS);
+// ─── Pic de trafic temporaire (scénario traffic-spike) ─────────────────────
 
-// Résumé toutes les 30 secondes
-setInterval(() => {
-  console.log(`[STATS] Total: ${requestCount} requêtes | Erreurs: ${errorCount} (${requestCount > 0 ? ((errorCount / requestCount) * 100).toFixed(1) : 0}%)`);
-}, 30000);
+let extraWorkerStop = false;
+
+async function extraWorker(id) {
+  while (!extraWorkerStop) {
+    try {
+      await runJourney();
+    } catch (err) {
+      log(`[extra worker ${id}] erreur inattendue: ${err.message}`);
+    }
+  }
+}
+
+function startTrafficSpikeWorkers() {
+  extraWorkerStop = false;
+  const count = CONCURRENCY * (TRAFFIC_SPIKE_MULTIPLIER - 1);
+  log(`[incident] démarrage de ${count} workers supplémentaires (pic de trafic)`);
+  for (let i = 0; i < count; i++) {
+    extraWorker(`spike-${i}`);
+  }
+}
+
+function stopTrafficSpikeWorkers() {
+  extraWorkerStop = true;
+}
+
+// ─── Driver d'incidents aléatoires ──────────────────────────────────────────
+
+async function randomIncidentDriver() {
+  log('=== Mode incidents aléatoires activé ===');
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const waitBeforeIncident = randomBetween(RANDOM_INCIDENT_MIN_INTERVAL_MS, RANDOM_INCIDENT_MAX_INTERVAL_MS);
+    log(`[incident] prochain incident dans ${Math.round(waitBeforeIncident / 1000)}s`);
+    await sleep(waitBeforeIncident);
+
+    const incident = RANDOM_INCIDENTS[randomBetween(0, RANDOM_INCIDENTS.length - 1)];
+    log(`[incident] déclenchement: ${incident}`);
+    await call('POST', `/admin/scenario/${incident}`);
+
+    if (incident === 'traffic-spike') {
+      startTrafficSpikeWorkers();
+    }
+
+    const duration = randomBetween(RANDOM_INCIDENT_MIN_DURATION_MS, RANDOM_INCIDENT_MAX_DURATION_MS);
+    log(`[incident] durée: ${Math.round(duration / 1000)}s`);
+    await sleep(duration);
+
+    if (incident === 'traffic-spike') {
+      stopTrafficSpikeWorkers();
+    }
+
+    log('[incident] retour au scénario normal');
+    await call('POST', '/admin/scenario/reset');
+  }
+}
+
+// ─── Démarrage ──────────────────────────────────────────────────────────────
+
+log('=== Générateur de trafic démarré ===');
+log(`Cible: ${TARGET_URL}`);
+log(`Intervalle par étape: ${INTERVAL_MS}ms`);
+log(`Workers: ${CONCURRENCY}`);
+log(`Incidents aléatoires: ${ENABLE_RANDOM_INCIDENTS}`);
+
+for (let i = 0; i < CONCURRENCY; i++) {
+  journeyWorker(i);
+}
+
+if (ENABLE_RANDOM_INCIDENTS) {
+  randomIncidentDriver();
+}

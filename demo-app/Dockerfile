@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --production
 
-COPY server.js .
+COPY server.js metrics.js scenarios.js products.js ./
 
 EXPOSE 3001
 
