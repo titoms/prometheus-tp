@@ -1,0 +1,60 @@
+groups:
+  - name: system.rules
+    rules:
+      - alert: HostHighCPUUsage
+        expr: |
+          100 -
+          (
+            avg by(instance) (
+              rate(
+                node_cpu_seconds_total{
+                  mode="idle"
+                }[1m]
+              )
+            ) * 100
+          )
+          > 80
+
+        for: 1m
+        labels:
+          severity: warning
+          categorie: systeme
+
+        annotations:
+          summary: "CPU machine élevé"
+          description: "L'utilisation CPU dépasse 80% depuis plus d'une minute."
+
+      - alert: HostLowDiskSpace
+        expr: |
+          100 *
+          (
+            node_filesystem_avail_bytes{
+              mountpoint="/mnt/host/c",
+              fstype!~"tmpfs|overlay"
+            }
+            /
+            node_filesystem_size_bytes{
+              mountpoint="/mnt/host/c",
+              fstype!~"tmpfs|overlay"
+            }
+          )
+          < 15
+
+        for: 2m
+        labels:
+          severity: warning
+          categorie: systeme
+        annotations:
+          summary: "Espace disque faible"
+          description: "Il reste moins de 15% d'espace disque disponible."
+
+      - alert: NodeExporterDown
+        expr: up{job="node-exporter"} == 0
+
+        for: 30s
+        labels:
+          severity: critical
+          categorie: systeme
+        annotations:
+          summary: "Node Exporter indisponible"
+          description: "Prometheus ne reçoit plus les métriques système."
