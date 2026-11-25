@@ -1,0 +1,71 @@
+groups:
+  - name: demo-app.rules
+    rules:
+      - alert: DemoAppDown
+        expr: up{job="demo-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Demo-app is down"
+          description: "Prometheus can't scrape demo-app for 1 minute or more..."
+
+      - alert: DemoAppHighErrorRate
+        expr: |
+          sum(
+            rate(
+              http_requests_total{job="demo-app", status_code=~"5.."}[1m]
+            )
+          )
+          /
+          sum(
+            rate(
+              http_requests_total{job="demo-app"}[1m]
+            )
+          )
+          > 0.10
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taux d'erreur HTTP elevé"
+          description: "Plus de 10% des requêtes retournent une erreur HTTP 5xx."
+
+      - alert: DemoAppHighLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by(route, le) (
+              rate(
+                http_request_duration_seconds_bucket{
+                  job="demo-app"
+                }[1m]
+              )
+            )
+          ) > 1
+
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latence élevée sur {{ $labels.route }}"
+          description: "Le p95 de la route {{ $labels.route }} dépasse 1 seconde."
+
+      - alert: HostHighMemoryUsage
+        expr: |
+          100 *
+          (
+            1 -
+            (
+              node_memory_MemAvailable_bytes
+              /
+              node_memory_MemTotal_bytes
+            )
+          ) > 80
+
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Utilisation mémoire élevée"
+          description: "La machine utilise plus de 80% de sa mémoire"
