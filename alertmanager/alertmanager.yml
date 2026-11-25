@@ -1,9 +1,81 @@
+global:
+  smtp_smarthost: 'mailhog:1025'
+  smtp_from: 'alertmanager@monitoring.local'
+  smtp_require_tls: false
+
 route:
   receiver: default
-  group_by: ['alertname']
+  group_by: 
+    - alertname
+    - job
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 10m
 
+  routes:
+    - receiver: warnings
+      matchers:
+        - severity = "warning"
+
+    - receiver: criticals
+      matchers:
+        - severity = "critical"
+
 receivers:
   - name: default
+    email_configs: 
+      - to: 'monitoring@demo.local'
+        send_resolved: true
+        headers:
+          Subject: '[MONITORING] {{ .CommonLabels.alertname }}'
+
+  - name: warnings
+    email_configs:
+      - to: 'dev@demo.local'
+        send_resolved: true
+        headers:
+          Subject: '[WARNING] {{ .CommonLabels.alertname }}'
+        html: |
+          <h2>WARNING</h2>
+          <p>
+            <strong>Alerte :</strong>
+            {{ .CommonLabels.alertname }}
+          </p>
+          <p>
+            <strong>Job :</strong>
+            {{ .CommonLabels.job }}
+          </p>
+          <p>
+            <strong>Résumé :</strong>
+            {{ .CommonAnnotations.summary }}
+          </p>
+
+          <p>
+            <strong>Description :</strong>
+            {{ .CommonAnnotations.description }}
+          </p>
+
+  - name: criticals
+    email_configs:
+      - to: 'ops-team@demo.local'
+        send_resolved: true
+        headers:
+          Subject: '[CRITICAL] {{ .CommonLabels.alertname }}'
+        html: |
+          <h1>CRITICAL</h1>
+          <p>
+            <strong>Alerte :</strong>
+            {{ .CommonLabels.alertname }}
+          </p>
+          <p>
+            <strong>Job :</strong>
+            {{ .CommonLabels.job }}
+          </p>
+          <p>
+            <strong>Résumé :</strong>
+            {{ .CommonAnnotations.summary }}
+          </p>
+          <p>
+            <strong>Description :</strong>
+            {{ .CommonAnnotations.description }}
+          </p>
