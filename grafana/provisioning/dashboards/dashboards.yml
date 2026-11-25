@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: training
+    orgId: 1
+    folder: Formation Prometheus
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+
+    options:
+      path: /var/lib/grafana/dashboards

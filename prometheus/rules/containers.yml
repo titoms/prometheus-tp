@@ -1,0 +1,15 @@
+groups:
+  - name: containers.rules
+    rules:
+
+      - alert: CadvisorDown
+        expr: up{job="cadvisor"} == 0
+
+        for: 30s
+        labels:
+          severity: warning
+          categorie: containers
+
+        annotations:
+          summary: "cAdvisor indisponible"
+          description: "Prometheus ne reçoit plus les métriques des containers."
